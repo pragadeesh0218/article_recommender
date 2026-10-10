@@ -203,10 +203,10 @@ class Recommender:
         p = self.clf.predict_proba(self.enc.transform([q]))[0]
         cards = [self._card(i, p) for i in np.argsort(-p)[:max(top, 1)]]
         conf = cards[0]["score"]
-        if known < self.t["min_known_ratio"]:
-            return self._agent(q, "out_of_scope", cards, conf)
-        if conf < self.t["min_probability"]:
-            return self._agent(q, "low_confidence", cards, conf)
+        # if known < self.t["min_known_ratio"]:
+        #     return self._agent(q, "out_of_scope", cards, conf)
+        # if conf < self.t["min_probability"]:
+        #     return self._agent(q, "low_confidence", cards, conf)
         return {"query": q, "decision": "article", "reason": "confident_match", "confidence": conf,
                 "recommended": cards[0]["label"], "article": cards[0], "matches": cards, "agent_url": None,
                 "note": None if cards[0]["link"] else "This article has no link yet (add it to the link column of the CSV)."}
