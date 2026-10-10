@@ -2,5 +2,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 models/*.joblib
-models/report.json
+models/*.json
+models/vocabulary.csv
 articles/*.pdf

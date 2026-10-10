@@ -1,49 +1,60 @@
-# Article recommender (Naive Bayes, from PDFs)
+# Article recommender: PDFs -> CSV -> Multinomial Naive Bayes
 
-Type a question, get the recommended knowledge-base article. Nothing else.
+Type a question, get the recommended knowledge-base article.
 
-- **Class (label)** = the PDF file name (without `.pdf`)
-- **Features** = the words inside the PDF
-- **Model** = Naive Bayes (chosen between Multinomial and Complement NB by testing)
+```
+STEP 1  articles/*.pdf --open and read--> data/articles.csv   (label = file name, text = words in the PDF)
+STEP 2  csv text -> tokenization -> n-grams -> vocabulary -> encoding (word counts) -> Multinomial Naive Bayes
+STEP 3  question -> same text steps -> Naive Bayes -> recommended article
+```
 
-## Use
+## Run
 ```bash
 pip install -r requirements.txt
-# 1. put all the downloaded article PDFs in the  articles/  folder (sub-folders are fine)
-python -m recommender.train                       # reads the PDFs, tests the model, saves models/model.joblib
+# put your 30-40 article PDFs in the  articles/  folder (sub-folders are fine)
+
+python -m recommender.extract      # STEP 1: reads every PDF, writes data/articles.csv
+python -m recommender.train        # STEP 2: trains, tests, saves models/model.joblib and models/vocabulary.csv
 python -m recommender.predict "how do I add an employee"
-python -m recommender.predict                     # interactive: type questions one after another
-pytest -q                                         # tests (make their own fake PDFs)
-```
-Output looks like:
-```
-Recommended article: How to add an employee
-  1. How to add an employee  (score 0.81)
-  2. Edit employee details   (score 0.10)
-  3. Run payroll             (score 0.04)
+python -m recommender.explain "how do I add an employee"     # shows every step for one question
+pytest -q
 ```
 
-## Name your PDFs well
-The file name is both the class and a set of training words (counted 3x), so a clear name helps:
-`How_to_add_an_employee.pdf` is better than `article_17.pdf`. Underscores are shown as spaces.
+## Step 1: PDF -> CSV (`extract.py`, `pdf_reader.py`)
+One row per PDF. Open `data/articles.csv` in Excel to check it before training.
 
-## What happens inside
-1. **Read PDFs** (`pdf_reader.py`): extract text, join words split across lines, drop page numbers, dates and URLs.
-   If the same line (site name, "Print", ...) appears in 40%+ of the PDFs it is removed as header/footer noise.
-2. **Preprocess** (`preprocess.py`), the same for PDFs and questions: lower-case, remove stop-words, stem
-   (refunds -> refund), keep word pairs.
-3. **Training examples:** each article is cut into sentence groups of about 25 words, each labeled with the article's file name.
-4. **Train** (`model.py`): TF-IDF + Naive Bayes. Training holds out some sentence groups of every article, checks if the model
-   finds the right article from them, and keeps the best variant and smoothing.
-5. **Predict:** same preprocessing on the question, then the top 3 articles with scores.
-   If none of the question's words appear in any article, it recommends nothing instead of guessing.
+| column | meaning |
+|---|---|
+| `label` | the PDF file name without `.pdf` (this is the class) |
+| `file` | path of the PDF inside `articles/` |
+| `pages`, `words` | size check |
+| `text` | all the text read from the PDF (features) |
+
+While reading: words hyphenated at line ends are re-joined; page numbers, dates and URLs are dropped; lines repeated in 40%+ of
+the PDFs (site header/footer) are removed. `extract` lists PDFs with no text (scanned images need OCR) or that cannot be opened.
+Name PDFs clearly: the file name words are also used as training text.
+
+## Step 2: the model (`nlp.py`, `model.py`)
+1. **Tokenization** `tokenize`: lower-case, remove emails/SSN, split into words, drop stop-words, stem (refunds -> refund).
+2. **N-grams** `make_ngrams`: single words plus word pairs (`add`, `employe`, `add_new`, `new_employe`).
+3. **Vocabulary** `build_vocabulary`: every distinct n-gram gets a column number (`min_df`, `max_features` available). Saved in `models/vocabulary.csv`.
+4. **Encoding** `encode`: each text becomes a row of word counts over the vocabulary (bag of words, sparse matrix).
+5. **Multinomial Naive Bayes** (scikit-learn): learns, for each article, how likely each vocabulary term is; smoothing `alpha` is chosen by testing.
+
+Training examples: each article is cut into sentence groups of ~25 words (about 10 to 20 per article), each labeled with the article's
+file name, plus the file name itself. 30-40 articles = 30-40 classes.
+
+## Step 3: predicting
+The question goes through the same four text steps, then Naive Bayes ranks the articles. Output is the top 3 with scores.
+If none of the question's words are in the vocabulary it recommends nothing. `explain` prints tokens, n-grams, which are in the
+vocabulary, the count vector, the class log-scores, and which words pushed the model to the top article.
 
 ## Reading the numbers
-`train` prints top-1 / top-3 on held-out fragments. These are **proxy numbers**: the test questions are pieces of the articles
-themselves, so real users (who phrase things differently) will score lower. The "score" is a Naive Bayes probability and is
-usually over-confident; use it to rank, not as a true percentage. `most confused article pairs` shows which articles overlap.
+`train` holds out sentence groups of every article, trains on the rest, and checks whether the model finds the article again
+(top-1 / top-3). These are **proxy numbers**: test questions are pieces of the articles themselves, so real users will score lower.
+The score is a Naive Bayes probability, usually over-confident: use it to rank. `most confused article pairs` shows overlapping articles.
 
 ## Limits
-- PDFs that are scanned images have no text. `train` lists them; they need OCR first.
-- Articles on similar topics will compete; the top-3 list helps.
-- There is no "out of scope" handling beyond the no-matching-words case: any question with a known word gets an article.
+- Naive Bayes counts words and ignores order, so "add" vs "remove" an employee can look alike.
+- Similar articles compete; the top-3 list helps.
+- Any question with at least one known word gets an article (no out-of-scope detection beyond that).
