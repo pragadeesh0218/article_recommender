@@ -67,7 +67,7 @@ def test_read_labels_text_and_boilerplate(folder):
 def test_csv_has_label_and_text_and_roundtrips(csv_file):
     with open(csv_file, newline="", encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
-    assert list(rows[0]) == ["label", "file", "pages", "words", "text"] and len(rows) == 8
+    assert list(rows[0]) == ["label", "link", "file", "pages", "words", "text"] and len(rows) == 8 and rows[0]["link"] == ""
     r = {x["label"]: x for x in rows}["How_to_tax"]
     assert r["file"] == "How_to_tax.pdf" and int(r["words"]) > 50 and "tax" in r["text"]
     docs = extract.load_csv(csv_file)
@@ -149,3 +149,151 @@ def test_train_needs_csv_with_two_articles(tmp_path):
     one.write_text("label,file,pages,words,text\nonly,only.pdf,1,60," + "tax filing bracket quarterly deduction credit " * 10 + "\n", encoding="utf-8")
     with pytest.raises(SystemExit):
         run(one, tmp_path / "m.joblib")
+
+
+# ================= new features: links, human agent, UI =================
+def add_links(src, dst, mapping, header="link"):
+    """Do what the user does in Excel: add a link column at the end of articles.csv."""
+    with open(src, newline="", encoding="utf-8-sig") as f:
+        rows = list(csv.reader(f))
+    head = [h for h in rows[0] if h != "link"]
+    keep = [i for i, h in enumerate(rows[0]) if h != "link"]
+    out = [head + [header]] + [[r[i] for i in keep] + [mapping.get(r[0], "")] for r in rows[1:]]
+    with open(dst, "w", newline="", encoding="utf-8-sig") as f:
+        csv.writer(f).writerows(out)
+
+
+LINKS = {f"How_to_{t}": f"https://kb.example.com/{t}" for t in TOPICS if t != "backup"}      # (no "backup" article: all 8 get a link)
+
+
+@pytest.fixture(scope="module")
+def linked_csv(csv_file, tmp_path_factory):
+    dst = tmp_path_factory.mktemp("linked") / "articles.csv"
+    add_links(csv_file, dst, {k: v for k, v in LINKS.items() if k != "How_to_tax"} | {"How_to_report": "javascript:alert(1)"}, header=" Link ")
+    return dst
+
+
+@pytest.fixture(scope="module")
+def linked_model(linked_csv, tmp_path_factory):
+    model, docs = run(linked_csv, tmp_path_factory.mktemp("m") / "m.joblib")
+    return model, docs
+
+
+def test_link_column_is_read_case_insensitively_and_made_safe(linked_csv):
+    docs = extract.load_csv(linked_csv)
+    assert docs["How_to_payroll"]["link"] == "https://kb.example.com/payroll"
+    assert docs["How_to_tax"]["link"] == "" and docs["How_to_tax"]["link_problem"] == ""
+    assert docs["How_to_report"]["link"] == "" and docs["How_to_report"]["link_problem"] == "javascript:alert(1)"
+    assert extract.clean_link("  http://a.b/c  ") == "http://a.b/c" and extract.clean_link("file:///etc/passwd") == ""
+    assert extract.load_csv(linked_csv.parent / "articles.csv") is not None
+
+
+def test_extract_again_keeps_links_you_typed(folder, linked_csv, tmp_path):
+    import shutil
+    csv_path = tmp_path / "articles.csv"
+    shutil.copy(linked_csv, csv_path)
+    docs, rep = extract.run(folder, csv_path)                       # re-run step 1 on the edited CSV
+    kept = extract.load_csv(csv_path)
+    assert kept["How_to_payroll"]["link"] == "https://kb.example.com/payroll"
+    assert rep["links_kept"] == 6 and rep["links_lost"] == []        # 8 articles - tax (no link) - report (unsafe link dropped)
+    assert [r["label"] for r in csv.DictReader(open(csv_path, encoding="utf-8-sig"))][0] == "How_to_deposit"
+    assert list(next(csv.DictReader(open(csv_path, encoding="utf-8-sig")))) == ["label", "link", "file", "pages", "words", "text"]
+
+
+def test_confident_question_returns_article_with_link(linked_model):
+    model, _ = linked_model
+    res = model.predict("how do i reset my password login credential")
+    assert res["decision"] == "article" and res["reason"] == "confident_match" and res["agent_url"] is None
+    assert res["article"]["label"] == "How_to_password" and res["article"]["link"] == "https://kb.example.com/password"
+    assert res["recommended"] == "How_to_password" and 0 < res["confidence"] <= 1
+
+
+def test_article_without_link_is_still_recommended_with_a_note(linked_model):
+    model, _ = linked_model
+    res = model.predict("tax filing bracket quarterly deduction credit")
+    assert res["decision"] == "article" and res["article"]["label"] == "How_to_tax"
+    assert res["article"]["link"] is None and "no link" in res["note"].lower()
+
+
+@pytest.mark.parametrize("q,reason", [
+    ("what is the weather today", "out_of_scope"), ("tell me a joke", "out_of_scope"), ("asdf qwer zxcv", "out_of_scope"),
+    ("hello", "out_of_scope"), ("i want to talk to a human agent", "asked_for_agent"), ("???", "unclear_question"), ("", "unclear_question")])
+def test_out_of_scope_goes_to_agent(linked_model, q, reason):
+    model, _ = linked_model
+    res = model.predict(q)
+    assert res["decision"] == "agent" and res["reason"] == reason and res["article"] is None and res["recommended"] is None
+    assert res["agent_url"].startswith("http") and res["note"]
+
+
+def test_low_confidence_branches_go_to_agent_and_keep_closest(linked_model):
+    model, _ = linked_model
+    saved = dict(model.t)
+    try:
+        model.t = {**saved, "min_probability": 1.1}                         # nothing can be confident enough
+        res = model.predict("how do i reset my password login credential")
+        assert res["decision"] == "agent" and res["reason"] == "low_confidence" and res["article"] is None
+        assert res["matches"][0]["label"] == "How_to_password"              # the closest article is still reported
+        model.t = {**saved, "min_probability": 0.0, "min_known_ratio": 1.1}  # words not known well enough
+        assert model.predict("reset password and zzz qqq")["reason"] == "out_of_scope"
+    finally:
+        model.t = saved
+
+
+def test_agent_rule_is_tuned_and_reported(linked_model):
+    model, _ = linked_model
+    t, r = model.t, model.report
+    assert 0 < t["min_probability"] <= 0.999 and 0 <= t["min_known_ratio"] <= 0.9
+    assert t["out_of_scope_sent_to_agent"] >= 0.9 and t["in_scope_answered"] >= 0.7 and t["precision_when_answered"] >= 0.9
+    assert r["articles_with_link"] == 6 and r["agent_rule"] == t and "casual" in r["held_out"]
+
+
+def test_explain_shows_the_decision(linked_model):
+    model, _ = linked_model
+    e = model.explain("reset my password login")
+    assert e["decision"] == "article" and e["reason"] == "confident_match" and e["known_ratio"] > 0.5
+    assert model.explain("what is the weather")["decision"] == "agent"
+
+
+def test_web_app(linked_model, monkeypatch):
+    from fastapi.testclient import TestClient
+    from recommender import app as app_mod
+    model, _ = linked_model
+    monkeypatch.setattr(app_mod.Recommender, "load", classmethod(lambda cls, path=None: model))
+    app_mod.state.update(model=None, error=None, n=0, article=0, agent=0)
+    with TestClient(app_mod.app) as c:
+        assert c.get("/health").json()["status"] == "ok"
+        a = c.post("/predict", json={"query": "export the report spreadsheet column"}).json()
+        assert a["decision"] == "article" and a["article"]["label"] == "How_to_report" and a["article"]["link"] is None   # unsafe link dropped
+        b = c.post("/predict", json={"query": "reset password login credential"}).json()
+        assert b["article"]["link"] == "https://kb.example.com/password"
+        g = c.post("/predict", json={"query": "what is the weather"}).json()
+        assert g["decision"] == "agent" and g["agent_url"]
+        assert c.post("/predict", json={"query": ""}).status_code == 422
+        s = c.get("/stats").json()
+        assert s["questions"] == 3 and s["article_shown"] == 2 and s["sent_to_agent"] == 1 and s["articles_with_link"] == 6
+        page = c.get("/")
+        assert page.status_code == 200 and "Find your answer" in page.text
+
+
+def test_web_app_without_model_explains(monkeypatch):
+    from fastapi.testclient import TestClient
+    from recommender import app as app_mod
+    def boom(cls, path=None):
+        raise FileNotFoundError("no model")
+    monkeypatch.setattr(app_mod.Recommender, "load", classmethod(boom))
+    app_mod.state.update(model=None, error=None)
+    with TestClient(app_mod.app) as c:
+        assert c.get("/health").json()["status"] == "not_ready"
+        r = c.post("/predict", json={"query": "hello"})
+        assert r.status_code == 503 and "recommender.train" in r.json()["detail"]
+
+
+def test_your_own_out_of_scope_questions_are_used_for_tuning(tmp_path, monkeypatch):
+    from recommender import model as model_mod
+    f = tmp_path / "out_of_scope.txt"
+    f.write_text("how do I pay my electricity bill\n\n  can I book a hotel  \n", encoding="utf-8")
+    monkeypatch.setattr(model_mod, "OOS_FILE", f)
+    qs = model_mod._oos()
+    assert "how do I pay my electricity bill" in qs and "can I book a hotel" in qs and "hello" in qs
+    monkeypatch.setattr(model_mod, "OOS_FILE", tmp_path / "missing.txt")
+    assert "can I book a hotel" not in model_mod._oos()

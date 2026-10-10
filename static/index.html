@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Find your answer</title>
+<style>
+  :root { --bg:#EEF1F4; --card:#fff; --ink:#16212B; --muted:#5A6A75; --line:#CFD8DF; --accent:#1F5FA8; --accent-ink:#fff;
+          --ok:#2B7A4B; --ok-bg:#E2F2E8; --warn:#A85A12; --warn-bg:#FBEEDD;
+          --font: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", sans-serif; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#10181E; --card:#18242D; --ink:#E7EDF1; --muted:#9BABB5; --line:#2C3C47;
+          --accent:#6AB0F2; --accent-ink:#0A1F33; --ok:#74D19C; --ok-bg:#16372A; --warn:#F0A55B; --warn-bg:#3A2A16; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 var(--font); }
+  main { max-width:720px; margin:0 auto; padding:40px 20px 64px; }
+  h1 { margin:0 0 6px; font-size:1.7rem; }
+  .lead { margin:0 0 22px; color:var(--muted); }
+  label.field { display:block; margin-bottom:6px; color:var(--muted); }
+  textarea { width:100%; min-height:90px; padding:12px 14px; font:inherit; color:var(--ink); background:var(--card);
+             border:1px solid var(--line); border-radius:8px; resize:vertical; }
+  :focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  button, .btn { font:inherit; font-weight:600; cursor:pointer; padding:10px 18px; border-radius:8px; text-decoration:none;
+                 border:1px solid var(--accent); background:var(--accent); color:var(--accent-ink); display:inline-block; }
+  button.quiet { background:transparent; color:var(--accent); }
+  button:disabled { opacity:.55; cursor:not-allowed; }
+  .row { display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; align-items:center; }
+  .auto { color:var(--muted); font-size:.92rem; display:flex; gap:6px; align-items:center; margin-left:auto; }
+  .note { margin-top:14px; color:var(--muted); font-size:.9rem; }
+  #out { margin-top:26px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:22px; }
+  .tag { display:inline-block; padding:3px 10px; border-radius:999px; font-size:.82rem; font-weight:600; }
+  .tag.ok { background:var(--ok-bg); color:var(--ok); } .tag.agent { background:var(--warn-bg); color:var(--warn); }
+  h2 { margin:12px 0 4px; font-size:1.3rem; line-height:1.3; }
+  .url { margin:0 0 16px; color:var(--muted); font-size:.88rem; word-break:break-all; }
+  .msg { margin:10px 0 16px; color:var(--muted); }
+  details { margin-top:18px; color:var(--muted); font-size:.92rem; } summary { cursor:pointer; }
+  details ul { margin:8px 0 0; padding-left:18px; } details a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Find your answer</h1>
+  <p class="lead">Describe your problem. We'll point you to the help article that answers it, or to a support agent.</p>
+  <label class="field" for="q">Your question</label>
+  <textarea id="q" placeholder="How do I add a new employee?"></textarea>
+  <div class="row">
+    <button id="go">Find answer</button><button id="clr" class="quiet" type="button">Clear</button>
+    <label class="auto"><input type="checkbox" id="auto"> Take me to the article automatically</label>
+  </div>
+  <p class="note">Please don't type passwords, bank numbers or other personal details.</p>
+  <div id="out" aria-live="polite"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, kids = []) => { const e = document.createElement(tag); Object.assign(e, props); kids.forEach(k => e.append(k)); return e; };
+const safe = (u) => /^https?:\/\//i.test(u || "") ? u : null;          // never put javascript: or other schemes in a link
+
+async function go() {
+  const q = $("q").value.trim(); if (!q) { $("q").focus(); return; }
+  $("go").disabled = true;
+  try {
+    const r = await fetch("/predict", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: q }) });
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    render(await r.json());
+  } catch (e) { $("out").replaceChildren(el("div", { className: "card", textContent: "Something went wrong: " + e.message })); }
+  finally { $("go").disabled = false; }
+}
+
+function render(r) {
+  const card = el("div", { className: "card" });
+  if (r.decision === "article") {
+    const link = safe(r.article.link);
+    card.append(el("span", { className: "tag ok", textContent: "Recommended article" }),
+                el("h2", { textContent: r.article.name }));
+    if (link) {
+      card.append(el("p", { className: "url", textContent: link }),
+                  el("a", { className: "btn", href: link, target: "_blank", rel: "noopener", textContent: "Open this article" }));
+      if ($("auto").checked) { card.append(el("p", { className: "msg", textContent: "Taking you to the article…" })); setTimeout(() => { window.location.href = link; }, 1200); }
+    } else {
+      card.append(el("p", { className: "msg", textContent: "This article doesn't have a link yet. Please ask a support agent for it." }));
+    }
+    const others = (r.matches || []).slice(1).filter(m => safe(m.link));
+    if (others.length) {
+      const ul = el("ul"); others.forEach(m => ul.append(el("li", {}, [el("a", { href: m.link, target: "_blank", rel: "noopener", textContent: m.name })])));
+      card.append(el("details", {}, [el("summary", { textContent: "Not what you wanted? Other articles" }), ul]));
+    }
+  } else {
+    card.append(el("span", { className: "tag agent", textContent: "Talk to a person" }),
+                el("h2", { textContent: "A support agent can help" }),
+                el("p", { className: "msg", textContent: r.note }));
+    const agent = safe(r.agent_url);
+    if (agent) card.append(el("a", { className: "btn", href: agent, target: "_blank", rel: "noopener", textContent: "Contact a support agent" }));
+  }
+  $("out").replaceChildren(card);
+}
+$("go").onclick = go;
+$("clr").onclick = () => { $("q").value = ""; $("out").replaceChildren(); $("q").focus(); };
+$("q").addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") go(); });
+</script>
+</body>
+</html>

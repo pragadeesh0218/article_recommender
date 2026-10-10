@@ -15,4 +15,5 @@ if __name__ == "__main__":
         print(f"   {m['label']:40} {m['log_score']}")
     if e.get("terms_favouring_top_article"):
         print("   words that pushed the model toward the top article:", e["terms_favouring_top_article"])
-    print("=> recommended:", e["recommended"])
+    print(f"6. decision: {e['decision']} ({e['reason']}), top probability {e['confidence']}, known-word ratio {e['known_ratio']}")
+    print(f"   rule: need probability >= {e['thresholds']['min_probability']} and known ratio >= {e['thresholds']['min_known_ratio']}")

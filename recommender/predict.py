@@ -5,11 +5,16 @@ from .model import Recommender
 
 
 def show(res):
-    if res["recommended"] is None:
-        print(res["note"]); return
-    print(f"Recommended article: {res['matches'][0]['name']}")
-    for i, m in enumerate(res["matches"], 1):
-        print(f"  {i}. {m['name']}  (score {m['score']:.2f})")
+    if res["decision"] == "agent":
+        print(f"-> Suggest a human agent ({res['reason']}): {res['note']}\n   Contact: {res['agent_url']}")
+        if res["matches"]:
+            print("   (closest articles, not confident enough: " + ", ".join(m["name"] for m in res["matches"]) + ")")
+        return
+    a = res["article"]
+    print(f"-> Recommended article: {a['name']}  (confidence {res['confidence']:.2f})")
+    print(f"   Open: {a['link'] or '(no link in the CSV yet)'}")
+    for m in res["matches"][1:]:
+        print(f"   also: {m['name']}  ({m['score']:.2f})")
 
 
 def main():

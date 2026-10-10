@@ -34,6 +34,8 @@ def main():
     a = ap.parse_args()
     model, docs = run(a.csv, vocab_path=VOCAB_PATH)
     r = model.report
+    no_link = [l for l, d in docs.items() if not d.get("link")]
+    bad_link = {l: d["link_problem"] for l, d in docs.items() if d.get("link_problem")}
     print(f"articles (classes): {r['n_articles']} | training examples: {r['n_training_examples']} | vocabulary: {r['vocabulary_size']} terms")
     print(f"Multinomial Naive Bayes, smoothing alpha = {r['alpha']}")
     print("held-out test (sentence groups the model never trained on):")
@@ -41,6 +43,15 @@ def main():
         if kind in r["held_out"]:
             h = r["held_out"][kind]
             print(f"  {label:28} top-1 {h['top1']:.2f}   top-3 {h['top3']:.2f}   (n={h['n']})")
+    t = r["agent_rule"]
+    print(f"human-agent rule: answer only if probability >= {t['min_probability']} and known-word ratio >= {t['min_known_ratio']}")
+    print(f"  in-scope questions answered {t['in_scope_answered']:.0%} (correct when answered: {t['precision_when_answered']}), "
+          f"out-of-scope questions sent to agent {t['out_of_scope_sent_to_agent']:.0%}")
+    print(f"links: {r['articles_with_link']}/{r['n_articles']} articles have a link")
+    if no_link:
+        print("WARNING no link (these articles can be recommended but not opened):", no_link[:10], "..." if len(no_link) > 10 else "")
+    if bad_link:
+        print("WARNING links ignored because they do not start with http:// or https://:", bad_link)
     if r["most_confused"]:
         print("most confused article pairs:")
         for c in r["most_confused"]:
